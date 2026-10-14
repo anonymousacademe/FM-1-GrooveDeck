@@ -1,0 +1,7 @@
+100 btn 4
+200 enc 3 5
+300 shot
+400 btn 7
+500 enc 2 4
+600 shot
+700 end

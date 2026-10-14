@@ -1,0 +1,17 @@
+300 keys 1
+360 keys 0
+1300 keys 2
+1360 keys 0
+2300 keys 4
+2360 keys 0
+3300 keys 8
+3360 keys 0
+4300 keys 16
+4360 keys 0
+5300 keys 32
+5360 keys 0
+6300 keys 64
+6360 keys 0
+7300 keys 128
+7360 keys 0
+8600 end

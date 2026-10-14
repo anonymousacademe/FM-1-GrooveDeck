@@ -68,7 +68,9 @@ static volatile uint32_t fm1_ms;                /* milliseconds since power-on (
 
 /* ---- flash: read anywhere; erase / program only the update's staging area and the settings sector */
 #define SETTINGS_AT 0x000FC000u                 /* one 4 KiB sector of Felucca's globals area */
-#define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u))
+#define PROJECT_AT 0x000FB000u                  /* GroveDeck: one more 4 KiB sector (in the free area below the settings) for the project */
+#define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u) || \
+                             FL_IN(off, n, PROJECT_AT, PROJECT_AT + 0x1000u))
 #include "fm1_flash.h"
 static uint8_t flash_ok;
 static int st_read(uint32_t off, void *dst, uint32_t n)
@@ -134,7 +136,7 @@ static void ota_commit(const uint8_t *parm)
 
 /* ---- settings: [magic][length][crc32] then the bytes; settings_save erases the sector (~50 ms with
  * the interrupts off: the sound drops out), so save when nothing plays, not on every knob step */
-#define SETTINGS_MAGIC 0x59474E44u              /* "DNGY" */
+#define SETTINGS_MAGIC 0x59474E47u              /* "GNGY" (GroveDeck: not Dinghy's) */
 static uint32_t crc32(const uint8_t *p, uint32_t n)
 {
     uint32_t c = 0xFFFFFFFFu, k;
@@ -168,6 +170,33 @@ static int settings_save(const void *p, uint32_t n)   /* p in RAM, n <= 256 */
     if ((rc = fl_write(SETTINGS_AT + sizeof h, p, n)) != 0)
         return rc;
     return fl_write(SETTINGS_AT, (const uint8_t *)h, sizeof h);   /* the header last: a cut save stays invalid */
+}
+
+/* ---- the project (GroveDeck): up to 4000 bytes in one sector, [magic][length][crc32] first, as the settings.
+ * Same rules: save when nothing plays (the erase stalls the sound). The header goes last: a cut save stays invalid. */
+static int project_load(void *p, uint32_t n)    /* 0: loaded; else p may be half filled: start from defaults */
+{
+    uint32_t h[3];
+    if (!flash_ok || n > 4000u || st_read(PROJECT_AT, h, sizeof h) || h[0] != SETTINGS_MAGIC || h[1] != n)
+        return -1;
+    if (st_read(PROJECT_AT + sizeof h, p, n) || crc32(p, n) != h[2])
+        return -1;
+    return 0;
+}
+static int project_save(const void *p, uint32_t n)
+{
+    uint32_t h[3] = {SETTINGS_MAGIC, n, 0}, took, off;
+    const uint8_t *b = p;
+    int rc;
+    if (!flash_ok || n > 4000u)
+        return -1;
+    h[2] = crc32(p, n);
+    if ((rc = fl_erase4k(PROJECT_AT, &took)) != 0)
+        return rc;
+    for (off = 0; off < n; off += 256u)
+        if ((rc = fl_write(PROJECT_AT + sizeof h + off, b + off, n - off > 256u ? 256u : n - off)) != 0)
+            return rc;
+    return fl_write(PROJECT_AT, (const uint8_t *)h, sizeof h);
 }
 
 /* ---- MIDI over USB: 4-byte USB-MIDI packets, cable 0 */

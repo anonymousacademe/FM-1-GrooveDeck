@@ -1,0 +1,25 @@
+100 btn 11
+200 btn 3 400
+250 keys 0x20
+350 keys 0
+700 keys 0x1
+760 keys 0
+800 keys 0x100
+860 keys 0
+900 keys 0x100
+960 keys 0
+1000 btn 11
+1100 btn 12
+2300 btn 12
+2500 keys 0x1000000
+2560 keys 0x1000001
+2600 keys 0
+2700 btn 12
+3500 btn 12
+3800 keys 0x20000
+3850 keys 0
+4000 btn 10 700
+4100 keys 0x2
+4800 keys 0
+5000 enc 6 1
+5200 end
