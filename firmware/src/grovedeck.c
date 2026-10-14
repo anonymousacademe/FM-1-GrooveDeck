@@ -18,16 +18,22 @@
 #define FM1_TICKS_PER_US 24u
 #endif
 
-#define NT 8u                                   /* drums */
+#define NT 16u                                  /* drums: one per pad */
 #define NSTEP 16u
 #define NPAT 8u
-enum { T_KICK, T_SNARE, T_CLAP, T_CHAT, T_OHAT, T_TOM, T_RIM, T_COW };
-static const char *const TNAME[NT] = {"KICK", "SNARE", "CLAP", "C.HAT", "O.HAT", "TOM", "RIM", "COWBL"};
+enum { T_KICK, T_SNARE, T_CLAP, T_CHAT, T_OHAT, T_TOM, T_RIM, T_COW,
+       T_CONGH, T_CONGL, T_CLAVE, T_SHAKE, T_CRASH, T_RIDE, T_GSNR, T_ZAP };
+static const char *const TNAME[NT] = {"KICK", "SNARE", "CLAP", "C.HAT", "O.HAT", "TOM", "RIM", "COWBL",
+                                      "CNG H", "CNG L", "CLAVE", "SHAKE", "CRASH", "RIDE", "G.SNR", "ZAP"};
 static const char *const TLAB[NT][4] = {
     {"TUNE", "DECAY", "PUNCH", "DRIVE"}, {"TUNE", "DECAY", "TONE", "SNAP"},
     {"TONE", "DECAY", "SPREAD", "DRIVE"}, {"TUNE", "DECAY", "TONE", "NOISE"},
     {"TUNE", "DECAY", "TONE", "NOISE"}, {"TUNE", "DECAY", "PUNCH", "CLICK"},
-    {"TUNE", "DECAY", "TONE", "CLICK"}, {"TUNE", "DECAY", "TONE", "DRIVE"}};
+    {"TUNE", "DECAY", "TONE", "CLICK"}, {"TUNE", "DECAY", "TONE", "DRIVE"},
+    {"TUNE", "DECAY", "SLAP", "BEND"}, {"TUNE", "DECAY", "SLAP", "BEND"},
+    {"TUNE", "DECAY", "TONE", "CLICK"}, {"TUNE", "DECAY", "RISE", "GAIN"},
+    {"TUNE", "DECAY", "TONE", "NOISE"}, {"TUNE", "DECAY", "TONE", "NOISE"},
+    {"TUNE", "GATE", "TONE", "SNAP"}, {"TUNE", "DECAY", "SWEEP", "GRIT"}};
 static const char *const MLAB[4] = {"LEVEL", "PAN", "SEND", "MUTE"};
 static const char *const PGN[4] = {"SOUND", "MIX", "FX", "GLOBAL"};
 
@@ -37,19 +43,75 @@ static const char *const GLAB[NG] = {"BPM", "SWING", "ACCENT", "REPEAT", "CRUSH"
 static volatile uint8_t G[NG];
 static volatile uint8_t TP[NT][4];              /* the sound of each drum */
 static volatile uint8_t MX[NT][3];              /* level, pan, delay send */
-static volatile uint8_t mute_mask, solo_mask;
+static volatile uint16_t mute_mask, solo_mask;
 static volatile uint8_t pat[NPAT][NT][NSTEP];   /* a step: 0 off, bit 0 on, bit 1 accent (the ISR writes while recording) */
 
 /* four kits: tune decay x3 x4 | level pan send */
 static const uint8_t KIT[4][NT][7] = {
-    {{40, 60, 90, 70, 118, 64, 0}, {60, 55, 70, 60, 105, 60, 30}, {80, 60, 50, 40, 95, 76, 55}, {70, 25, 90, 70, 80, 84, 10},
-     {70, 60, 90, 70, 75, 90, 25}, {40, 55, 50, 30, 95, 48, 20}, {70, 30, 60, 50, 85, 70, 25}, {55, 50, 70, 40, 70, 80, 40}},
-    {{60, 70, 70, 30, 118, 64, 0}, {80, 50, 80, 50, 105, 60, 25}, {70, 70, 60, 20, 95, 76, 45}, {64, 20, 70, 50, 80, 84, 10},
-     {64, 55, 70, 50, 75, 90, 20}, {70, 60, 60, 20, 95, 48, 15}, {64, 25, 50, 30, 85, 70, 20}, {64, 45, 60, 20, 70, 80, 30}},
-    {{20, 100, 30, 10, 120, 64, 0}, {40, 60, 40, 70, 100, 60, 20}, {60, 80, 80, 0, 90, 76, 50}, {60, 15, 60, 30, 75, 84, 5},
-     {60, 70, 60, 30, 72, 90, 25}, {30, 80, 20, 10, 95, 48, 20}, {50, 35, 40, 20, 80, 70, 20}, {50, 70, 50, 0, 70, 80, 35}},
-    {{50, 45, 50, 40, 112, 64, 0}, {55, 40, 40, 50, 100, 60, 25}, {60, 45, 60, 30, 90, 76, 45}, {45, 18, 40, 60, 78, 84, 10},
-     {45, 40, 40, 60, 72, 90, 20}, {55, 45, 40, 40, 90, 48, 20}, {60, 22, 40, 70, 80, 70, 20}, {45, 35, 45, 30, 65, 80, 30}}};
+    {{40, 60, 90, 70, 118, 64, 0},
+     {60, 55, 70, 60, 105, 60, 30},
+     {80, 60, 50, 40, 95, 76, 55},
+     {70, 25, 90, 70, 80, 84, 10},
+     {70, 60, 90, 70, 75, 90, 25},
+     {40, 55, 50, 30, 95, 48, 20},
+     {70, 30, 60, 50, 85, 70, 25},
+     {55, 50, 70, 40, 70, 80, 40},
+     {64, 40, 60, 40, 85, 36, 30},
+     {64, 50, 50, 40, 85, 92, 30},
+     {64, 25, 40, 30, 78, 90, 15},
+     {70, 30, 40, 70, 70, 68, 25},
+     {64, 75, 50, 60, 78, 40, 35},
+     {64, 60, 60, 40, 72, 84, 25},
+     {64, 60, 70, 60, 100, 64, 45},
+     {40, 50, 80, 40, 95, 64, 40}},
+    {{60, 70, 70, 30, 118, 64, 0},
+     {80, 50, 80, 50, 105, 60, 25},
+     {70, 70, 60, 20, 95, 76, 45},
+     {64, 20, 70, 50, 80, 84, 10},
+     {64, 55, 70, 50, 75, 90, 20},
+     {70, 60, 60, 20, 95, 48, 15},
+     {64, 25, 50, 30, 85, 70, 20},
+     {64, 45, 60, 20, 70, 80, 30},
+     {64, 45, 50, 30, 85, 36, 20},
+     {64, 55, 40, 30, 85, 92, 20},
+     {64, 22, 50, 20, 78, 90, 10},
+     {64, 28, 30, 60, 70, 68, 20},
+     {64, 70, 60, 50, 75, 40, 30},
+     {64, 55, 70, 30, 72, 84, 20},
+     {64, 55, 60, 50, 100, 64, 40},
+     {50, 45, 70, 30, 92, 64, 30}},
+    {{20, 100, 30, 10, 120, 64, 0},
+     {40, 60, 40, 70, 100, 60, 20},
+     {60, 80, 80, 0, 90, 76, 50},
+     {60, 15, 60, 30, 75, 84, 5},
+     {60, 70, 60, 30, 72, 90, 25},
+     {30, 80, 20, 10, 95, 48, 20},
+     {50, 35, 40, 20, 80, 70, 20},
+     {50, 70, 50, 0, 70, 80, 35},
+     {60, 55, 40, 20, 85, 36, 25},
+     {60, 65, 30, 20, 85, 92, 25},
+     {60, 30, 40, 10, 78, 90, 10},
+     {60, 35, 30, 50, 68, 68, 15},
+     {60, 85, 40, 40, 74, 40, 30},
+     {60, 70, 50, 20, 70, 84, 20},
+     {60, 70, 50, 40, 98, 64, 55},
+     {30, 60, 60, 20, 92, 64, 35}},
+    {{50, 45, 50, 40, 112, 64, 0},
+     {55, 40, 40, 50, 100, 60, 25},
+     {60, 45, 60, 30, 90, 76, 45},
+     {45, 18, 40, 60, 78, 84, 10},
+     {45, 40, 40, 60, 72, 90, 20},
+     {55, 45, 40, 40, 90, 48, 20},
+     {60, 22, 40, 70, 80, 70, 20},
+     {45, 35, 45, 30, 65, 80, 30},
+     {55, 40, 40, 30, 80, 36, 20},
+     {55, 50, 30, 30, 80, 92, 20},
+     {60, 20, 40, 30, 74, 90, 10},
+     {55, 25, 30, 80, 62, 68, 20},
+     {55, 65, 40, 70, 70, 40, 30},
+     {55, 50, 50, 50, 68, 84, 20},
+     {55, 50, 50, 70, 92, 64, 40},
+     {45, 45, 70, 60, 88, 64, 40}}};
 static const char *const KITNAME[4] = {"CYBER", "909", "808", "DUST"};
 
 /* ---- the drums (run in the audio ISR: no flash, no screen, no waiting) */
@@ -101,6 +163,43 @@ static void trigger(uint32_t t, uint32_t vel)
         d->dc = (int32_t)DECC[25u + p1 * 75u / 128u];
         d->x[0] = (int32_t)p3;
         break;
+    case T_ZAP:                                 /* a laser: a sine that falls fast from very high */
+        d->inc[0] = inc_hz16(80u * 16u + p0 * 10u);
+        d->sw = (uint32_t)(((uint64_t)d->inc[0] * (8u + p2)) >> 3);
+        d->penv = 32767; d->pdc = (int32_t)DECC[8u + p1 * 25u / 128u];
+        d->dc = (int32_t)DECC[20u + p1 * 60u / 128u];
+        d->x[0] = (int32_t)p3;
+        break;
+    case T_CONGH:
+    case T_CONGL:                               /* a skin: a sine with its octave, a slap, a small bend */
+        m = TUNEM[p0];
+        d->inc[0] = (uint32_t)(((uint64_t)inc_hz16((t == T_CONGH ? 330u : 220u) * 16u) * m) >> 12);
+        d->sw = (uint32_t)(((uint64_t)d->inc[0] * (p3 * 2u)) >> 8);
+        d->penv = 32767; d->pdc = 64600;
+        d->dc = (int32_t)DECC[15u + p1 * 55u / 128u];
+        d->x[0] = (int32_t)p2;
+        break;
+    case T_CLAVE:                               /* wood: two short sines, 1.48 apart */
+        m = TUNEM[p0];
+        d->inc[0] = (uint32_t)(((uint64_t)inc_hz16(2500u * 16u) * m) >> 12);
+        d->inc[1] = (uint32_t)(((uint64_t)d->inc[0] * 379u) >> 8);
+        d->dc = (int32_t)DECC[p1 * 30u / 128u];
+        d->x[0] = (int32_t)p2; d->x[1] = (int32_t)p3;
+        break;
+    case T_SHAKE:                               /* band noise with a soft rise */
+        d->x[0] = (int32_t)(9000u + p0 * 170u);
+        d->dc = (int32_t)DECC[20u + p1 * 35u / 128u];
+        d->env2 = 0; d->dc2 = (int32_t)(32767u / (100u + p2 * 12u));
+        d->x[2] = (int32_t)p3;
+        break;
+    case T_GSNR:                                /* the gated snare: noise held at full, then cut */
+        d->inc[0] = inc_hz16(190u * 16u + p0 * 10u);
+        d->sw = d->inc[0] >> 3; d->penv = 32767; d->pdc = 64800;
+        d->dc = (int32_t)DECC[25];
+        d->env2 = 32767; d->dc2 = 58000;
+        d->b1 = 2000u + p1 * 90u;
+        d->x[0] = (int32_t)p2; d->x[1] = (int32_t)(9000u + p3 * 130u);
+        break;
     case T_TOM:
         d->inc[0] = inc_hz16(80u * 16u + p0 * 20u);
         d->sw = (uint32_t)(((uint64_t)d->inc[0] * (p2 * 2u)) >> 7);
@@ -125,11 +224,14 @@ static void trigger(uint32_t t, uint32_t vel)
         break;
     case T_CHAT:
     case T_OHAT:
+    case T_CRASH:
+    case T_RIDE:                                /* the metal: six squares; the cymbals ring longer */
         m = TUNEM[p0];
         for (i = 0; i < 6u; i++) d->inc[i] = (uint32_t)(((uint64_t)HATINC[i] * m) >> 12);
-        d->dc = (int32_t)DECC[t == T_CHAT ? p1 * 40u / 128u : 45u + p1 * 55u / 128u];
-        d->x[0] = (int32_t)(14000u + p2 * 130u);
-        d->x[1] = (int32_t)p3;
+        d->dc = (int32_t)DECC[t == T_CHAT ? p1 * 40u / 128u : t == T_OHAT ? 45u + p1 * 55u / 128u
+                                         : t == T_CRASH ? 75u + p1 * 50u / 128u : 55u + p1 * 45u / 128u];
+        d->x[0] = (int32_t)(t == T_CRASH ? 10000u + p2 * 100u : t == T_RIDE ? 16000u + p2 * 120u : 14000u + p2 * 130u);
+        d->x[1] = (int32_t)(t == T_RIDE ? p3 / 2u : p3);
         if (t == T_CHAT) dv[T_OHAT].dc = 64000;                /* the closed hat chokes the open one */
         break;
     case T_RIM:
@@ -157,13 +259,14 @@ static void render_track(uint32_t t, int32_t *o)   /* 16 samples, Q15 */
     switch (t) {
     case T_KICK:
     case T_TOM:
+    case T_ZAP:
         for (i = 0; i < 16u; i++) {
             int32_t s;
             d->ph[0] += d->inc[0] + (uint32_t)(((int64_t)d->sw * d->penv) >> 15);
             d->penv = (d->penv * d->pdc) >> 16;
             s = (sine(d->ph[0]) * d->env) >> 15;
             d->env = (d->env * d->dc) >> 16;
-            if (t == T_KICK) s = sclip((s * (256 + d->x[0] * 6)) >> 8);
+            if (t == T_KICK || t == T_ZAP) s = sclip((s * (256 + d->x[0] * 6)) >> 8);
             else if (d->t < 300u) s += (((noise() * d->x[0]) >> 7) * (int32_t)(300u - d->t)) >> 9;
             d->t++;
             o[i] = clamp15(s);
@@ -202,8 +305,66 @@ static void render_track(uint32_t t, int32_t *o)   /* 16 samples, Q15 */
             o[i] = s;
         }
         break;
+    case T_CONGH:
+    case T_CONGL:
+        for (i = 0; i < 16u; i++) {
+            int32_t s;
+            d->ph[0] += d->inc[0] + (uint32_t)(((int64_t)d->sw * d->penv) >> 15);
+            d->penv = (d->penv * d->pdc) >> 16;
+            s = ((sine(d->ph[0]) * 3 + sine(d->ph[0] * 2u)) >> 2) * d->env >> 15;
+            if (d->t < 200u) s += (((noise() * d->x[0]) >> 8) * (int32_t)(200u - d->t)) >> 8;   /* the slap */
+            d->env = (d->env * d->dc) >> 16;
+            d->t++;
+            o[i] = clamp15(s);
+        }
+        break;
+    case T_CLAVE:
+        for (i = 0; i < 16u; i++) {
+            int32_t s;
+            d->ph[0] += d->inc[0]; d->ph[1] += d->inc[1];
+            s = (sine(d->ph[0]) * 3 + ((sine(d->ph[1]) * d->x[0]) >> 6)) >> 2;
+            if (d->t < 80u) s += (noise() * d->x[1]) >> 9;
+            s = clamp15(((clamp15(s) * d->env) >> 15) * 5 >> 1);                   /* wood is quiet: more gain */
+            d->env = (d->env * d->dc) >> 16;
+            d->t++;
+            o[i] = s;
+        }
+        break;
+    case T_SHAKE:
+        for (i = 0; i < 16u; i++) {
+            int32_t n = noise(), band, s;
+            d->lp1 += ((n - d->lp1) * d->x[0]) >> 16;
+            d->lp2 += ((d->lp1 - d->lp2) * 6000) >> 16;
+            band = d->lp1 - d->lp2;
+            if (d->env2 < 32767) { d->env2 += d->dc2; if (d->env2 > 32767) d->env2 = 32767; }   /* the soft rise */
+            s = ((((band * d->env) >> 15) * 3 * d->env2) >> 15);
+            s = (s * (256 + d->x[2] * 4)) >> 8;
+            d->env = (d->env * d->dc) >> 16;
+            d->t++;
+            o[i] = clamp15(s);
+        }
+        break;
+    case T_GSNR:
+        for (i = 0; i < 16u; i++) {
+            int32_t b, n, hp, s;
+            d->ph[0] += d->inc[0] + (uint32_t)(((int64_t)d->sw * d->penv) >> 15);
+            d->penv = (d->penv * d->pdc) >> 16;
+            b = (sine(d->ph[0]) * d->env) >> 15;
+            n = noise();
+            d->lp1 += ((n - d->lp1) * d->x[1]) >> 16;
+            hp = n - d->lp1;
+            n = (hp * d->env2) >> 15;
+            if (d->t >= d->b1) d->env2 = (d->env2 * d->dc2) >> 16;                                 /* the gate closes */
+            s = ((b * (127 - d->x[0]) + n * (24 + d->x[0])) * 13) >> 10;
+            d->env = (d->env * d->dc) >> 16;
+            d->t++;
+            o[i] = clamp15(s);
+        }
+        break;
     case T_CHAT:
     case T_OHAT:
+    case T_CRASH:
+    case T_RIDE:
         for (i = 0; i < 16u; i++) {
             int32_t x = 0, y, y2, n;
             for (k = 0; k < 6u; k++) { d->ph[k] += d->inc[k]; x += (d->ph[k] >> 31) ? 3000 : -3000; }
@@ -242,7 +403,7 @@ static void render_track(uint32_t t, int32_t *o)   /* 16 samples, Q15 */
         }
         break;
     }
-    if (d->t > 1500u && d->env < 16 && (t != T_SNARE || d->env2 < 16)) d->on = 0;   /* done: costs nothing now */
+    if (d->t > 1500u && d->env < 16 && ((t != T_SNARE && t != T_GSNR) || d->env2 < 16)) d->on = 0;   /* done: costs nothing now */
 }
 
 /* ---- the delay: ping-pong, in the pool (synced to the tempo) */
@@ -403,7 +564,7 @@ static void engine_tick(void)                   /* every 16 frames */
 }
 
 /* ---- the project: the patterns, the sounds, the mixer (one flash sector, platform.c: project_load / project_save) */
-#define PROJ_MAGIC 0x47u
+#define PROJ_MAGIC 0x48u
 static struct { uint8_t magic, cur, kit, mode; uint8_t pat[NPAT][NT][NSTEP], tp[NT][4], mx[NT][3], g[NG]; } pr;   /* 1092 B */
 static uint32_t kit_n;
 
@@ -439,6 +600,14 @@ static void defaults(void)
     put_pat(1, T_OHAT, 0x2000, 0);
     put_pat(1, T_TOM, 0xC000, 0);
     put_pat(1, T_COW, 0x0040, 0);
+    put_pat(1, T_SHAKE, 0xAAAA, 0);
+    put_pat(1, T_CONGH, 0x0448, 0);
+    put_pat(1, T_CONGL, 0x2020, 0);
+    put_pat(2, T_KICK, 0x1111, 0x0001);         /* an eighties one: the gated snare, a ride, a crash, a laser */
+    put_pat(2, T_GSNR, 0x1010, 0);
+    put_pat(2, T_RIDE, 0x5555, 0x1111);
+    put_pat(2, T_CRASH, 0x0001, 0);
+    put_pat(2, T_ZAP, 0x8000, 0);
     for (s = 0; s < NG; s++) G[s] = G0[s];
     mute_mask = solo_mask = 0;
     load_kit(0);
@@ -495,11 +664,13 @@ static void row_text(uint32_t page, uint32_t r, uint32_t sel, char *s)
 
 static void draw_title(uint32_t patn, uint32_t pl, uint32_t rc, uint32_t ban)   /* ban: 1..8 shows that drum big */
 {
-    char s[12], n[6], big[12];
+    char s[12], n[6], big[14];
     int32_t x;
     cv_begin(240, 40, BG);
     if (ban) {                                  /* the drum just selected, large, where the eye already is */
-        big[0] = (char)('0' + ban); big[1] = ' '; scopy(big + 2, TNAME[ban - 1u]);
+        itoa3((int32_t)ban, big);
+        for (x = 0; big[x]; ) x++;
+        big[x++] = ' '; scopy(big + x, TNAME[ban - 1u]);
         cv_text(10, 0, &FONT_L, big, C_MG);
         cv_text(6, 0, &FONT_L, big, C_CY);
         cv_text(8, 0, &FONT_L, big, C_YE);
@@ -520,12 +691,12 @@ static void draw_title(uint32_t patn, uint32_t pl, uint32_t rc, uint32_t ban)   
     cv_blit(0, 0);
 }
 
-static void draw_grid(uint32_t half, uint32_t sel)      /* four drums of the current pattern; the selected one is lit up */
+static void draw_grid(uint32_t half, uint32_t sel)      /* four drums of the current bank (8 of the 16); the selected one is lit up */
 {
     uint32_t r, s, cp = cur_pat;
     cv_begin(240, 48, BG);
     for (r = 0; r < 4u; r++) {
-        uint32_t t = half * 4u + r, muted = !audible(t), isel = t == sel;
+        uint32_t t = (sel >> 3) * 8u + half * 4u + r, muted = !audible(t), isel = t == sel;
         int32_t y = (int32_t)r * 12 + 1;
         if (isel) {                             /* a tinted band and a bar on the left edge */
             cv_rect(0, y - 1, 240, 12, C_SELBG);
@@ -564,10 +735,12 @@ static void draw_row(uint32_t page, uint32_t r, uint32_t sel, uint32_t hot)
 
 static void draw_status(uint32_t page, uint32_t sel, uint32_t stepmode, const char *msg)
 {
-    char l[12], r[40], n[8];
+    char l[16], r[40], n[8];
     uint32_t i = 0, j;
     const char *p;
-    l[0] = (char)('1' + sel); l[1] = ' '; scopy(l + 2, TNAME[sel]);     /* the selected drum, bright, on the left */
+    itoa3((int32_t)sel + 1, l);
+    for (j = 0; l[j]; ) j++;
+    l[j++] = ' '; scopy(l + j, TNAME[sel]);     /* the selected drum, bright, on the left */
     if (msg) scopy(r, msg);
     else {
         for (p = PGN[page]; *p; ) r[i++] = *p++;
@@ -618,9 +791,9 @@ static void app_main(void)
             uint32_t mod_m = keys >> 24 & 1u, mod_s = keys >> 25 & 1u, mod_c = keys >> 26 & 1u;
             if (down >> k & 1u) {
                 if (k < 16u) {
-                    t = k & 7u;
-                    if (mod_m) { mute_mask ^= (uint8_t)(1u << t); }                       /* hold MUTE + a pad */
-                    else if (mod_s) { solo_mask ^= (uint8_t)(1u << t); }                  /* hold SOLO + a pad */
+                    t = k;
+                    if (mod_m) { mute_mask ^= (uint16_t)(1u << t); }                       /* hold MUTE + a pad */
+                    else if (mod_s) { solo_mask ^= (uint16_t)(1u << t); }                  /* hold SOLO + a pad */
                     else if (mod_c) { for (r = 0; r < NSTEP; r++) pat[cur_pat][t][r] = 0; msg = "CLEARED"; t_msg = fm1_ms; }
                     else if (sh) { sel = t; redraw = 1; banner_t = fm1_ms; }                                 /* hold SEL + a pad */
                     else if (stepmode) { uint8_t v = pat[cur_pat][sel][k]; pat[cur_pat][sel][k] = (uint8_t)(v == 0u ? 1u : v == 1u ? 3u : 0u); }
@@ -630,7 +803,7 @@ static void app_main(void)
                     else want_pat = (uint8_t)(k - 16u);
                 }
             }
-            if (up >> k & 1u && k < 16u && !stepmode) push_ev(EV_PADUP, k & 7u, 0);
+            if (up >> k & 1u && k < 16u && !stepmode) push_ev(EV_PADUP, k, 0);
         }
 
         b = fm1_input_edges(&rel);
@@ -657,12 +830,12 @@ static void app_main(void)
                 volatile uint8_t *p = param_ptr(page, k, sel);
                 hot = k;
                 if (p) { int32_t v = (int32_t)*p + d * (d > 2 || d < -2 ? 6 : 2); *p = (uint8_t)(v < 0 ? 0 : v > 127 ? 127 : v); }
-                else if (d > 0) mute_mask |= (uint8_t)(1u << sel);
-                else mute_mask &= (uint8_t)~(1u << sel);
+                else if (d > 0) mute_mask |= (uint16_t)(1u << sel);
+                else mute_mask &= (uint16_t)~(1u << sel);
             }
         }
         d = fm1_enc_take(ENC_SELECT);
-        if (d) { sel = (sel + NT + (d > 0 ? 1u : NT - 1u)) % NT; redraw = 1; banner_t = fm1_ms; }
+        if (d) { int32_t n = ((int32_t)sel + d) % (int32_t)NT; sel = (uint32_t)(n < 0 ? n + (int32_t)NT : n); redraw = 1; banner_t = fm1_ms; }   /* every detent counts */
         d = fm1_enc_take(ENC_ALGORITHM);
         if (d) { int32_t v = (int32_t)G[G_BPM] + d * (d > 2 || d < -2 ? 6 : 2); G[G_BPM] = (uint8_t)(v < 0 ? 0 : v > 127 ? 127 : v); }
         d = fm1_enc_take(ENC_PRESETS);
@@ -676,7 +849,7 @@ static void app_main(void)
                 if (on != (pl && seq_step == k ? 1u : 0u)) ledmask |= 1u << k;
             }
         } else
-            for (t = 0; t < NT; t++) if (fm1_ms < flash_until[t]) ledmask |= 0x101u << t;
+            for (t = 0; t < NT; t++) if (fm1_ms < flash_until[t]) ledmask |= 1u << t;
         ledmask |= 1u << (16u + cur_pat);
         if (want_pat != cur_pat && (fm1_ms >> 7 & 1u)) ledmask |= 1u << (16u + (want_pat & 7u));   /* the next pattern blinks */
         if (mute_mask) ledmask |= 1u << 24;
@@ -694,7 +867,7 @@ static void app_main(void)
         if (redraw) { for (k = 0; k < 4u; k++) shown[k] = 255; sig_drawn = ~0u; grid_sig = ~0u; head_drawn = ~0u; t_stat = fm1_ms - 1000u; redraw = 0; }
         if (sig != sig_drawn) { sig_drawn = sig; draw_title(patn, pl, rc, ban); }
         {
-            uint32_t h = sel * 7u + mute_mask * 131u + solo_mask * 977u + cur_pat * 31u, s, tt;
+            uint32_t h = (sel >> 3) * 5u + sel * 7u + mute_mask * 131u + solo_mask * 977u + cur_pat * 31u, s, tt;
             for (tt = 0; tt < NT; tt++) for (s = 0; s < NSTEP; s++) h = h * 33u + pat[cur_pat][tt][s];
             if (h != grid_sig) { grid_sig = h; draw_grid(0, sel); draw_grid(1, sel); }
         }
