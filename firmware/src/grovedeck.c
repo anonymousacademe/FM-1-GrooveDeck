@@ -452,7 +452,7 @@ static void defaults(void)
 #define C_PU RGB(60, 38, 100)
 #define C_GR RGB(24, 16, 48)
 #define C_TX RGB(200, 200, 230)
-#define C_SELD RGB(110, 0, 70)
+#define C_SELBG RGB(34, 0, 26)
 
 static void itoa3(int32_t v, char *s)
 {
@@ -493,14 +493,21 @@ static void row_text(uint32_t page, uint32_t r, uint32_t sel, char *s)
     itoa3((int32_t)v, s);
 }
 
-static void draw_title(uint32_t patn, uint32_t pl, uint32_t rc)
+static void draw_title(uint32_t patn, uint32_t pl, uint32_t rc, uint32_t ban)   /* ban: 1..8 shows that drum big */
 {
-    char s[12], n[6];
+    char s[12], n[6], big[12];
     int32_t x;
     cv_begin(240, 40, BG);
-    cv_text(10, 0, &FONT_L, "GROVEDECK", C_MG);   /* chromatic aberration: magenta, cyan, then white on top */
-    cv_text(6, 0, &FONT_L, "GROVEDECK", C_CY);
-    cv_text(8, 0, &FONT_L, "GROVEDECK", C_WHITE);
+    if (ban) {                                  /* the drum just selected, large, where the eye already is */
+        big[0] = (char)('0' + ban); big[1] = ' '; scopy(big + 2, TNAME[ban - 1u]);
+        cv_text(10, 0, &FONT_L, big, C_MG);
+        cv_text(6, 0, &FONT_L, big, C_CY);
+        cv_text(8, 0, &FONT_L, big, C_YE);
+    } else {
+        cv_text(10, 0, &FONT_L, "GROVEDECK", C_MG);                       /* chromatic aberration: magenta, cyan, then white on top */
+        cv_text(6, 0, &FONT_L, "GROVEDECK", C_CY);
+        cv_text(8, 0, &FONT_L, "GROVEDECK", C_WHITE);
+    }
     itoa3(60 + G[G_BPM], n);
     scopy(s, "PAT ");
     s[4] = (char)('1' + patn); s[5] = 0;
@@ -513,18 +520,23 @@ static void draw_title(uint32_t patn, uint32_t pl, uint32_t rc)
     cv_blit(0, 0);
 }
 
-static void draw_grid(uint32_t half, uint32_t sel)      /* four drums of the current pattern */
+static void draw_grid(uint32_t half, uint32_t sel)      /* four drums of the current pattern; the selected one is lit up */
 {
     uint32_t r, s, cp = cur_pat;
     cv_begin(240, 48, BG);
     for (r = 0; r < 4u; r++) {
-        uint32_t t = half * 4u + r, muted = !audible(t);
+        uint32_t t = half * 4u + r, muted = !audible(t), isel = t == sel;
+        int32_t y = (int32_t)r * 12 + 1;
+        if (isel) {                             /* a tinted band and a bar on the left edge */
+            cv_rect(0, y - 1, 240, 12, C_SELBG);
+            cv_rect(0, y - 1, 2, 12, C_MG);
+        }
         for (s = 0; s < NSTEP; s++) {
-            int32_t x = (int32_t)s * 15 + 1, y = (int32_t)r * 12 + 1;
+            int32_t x = (int32_t)s * 15 + 2;
             uint32_t v = pat[cp][t][s];
-            uint16_t off = t == sel ? C_SELD : (s & 3u) == 0 ? C_PU : C_GR;
-            if (v & 1u) cv_rect(x, y, 13, 10, muted ? C_PU : (v & 2u) ? C_YE : C_CY);
-            else { cv_rect(x, y, 13, 1, off); cv_rect(x, y + 9, 13, 1, off); cv_rect(x, y, 1, 10, off); cv_rect(x + 12, y, 1, 10, off); }
+            uint16_t off = isel ? C_MG : (s & 3u) == 0 ? C_PU : C_GR;
+            if (v & 1u) cv_rect(x, y, 12, 10, muted ? C_PU : (v & 2u) ? C_YE : C_CY);
+            else { cv_rect(x, y, 12, 1, off); cv_rect(x, y + 9, 12, 1, off); cv_rect(x, y, 1, 10, off); cv_rect(x + 11, y, 1, 10, off); }
         }
     }
     cv_blit(0, 44u + half * 48u);
@@ -532,7 +544,7 @@ static void draw_grid(uint32_t half, uint32_t sel)      /* four drums of the cur
 static void draw_head(uint32_t s, uint32_t pl)          /* the playhead above the grid */
 {
     cv_begin(240, 4, BG);
-    if (pl) cv_rect((int32_t)s * 15 + 1, 0, 13, 3, C_MG);
+    if (pl) cv_rect((int32_t)s * 15 + 2, 0, 12, 3, C_MG);
     cv_blit(0, 40);
 }
 
@@ -552,27 +564,30 @@ static void draw_row(uint32_t page, uint32_t r, uint32_t sel, uint32_t hot)
 
 static void draw_status(uint32_t page, uint32_t sel, uint32_t stepmode, const char *msg)
 {
-    char s[40], n[8];
+    char l[12], r[40], n[8];
     uint32_t i = 0, j;
-    const char *p = TNAME[sel];
-    while (*p) s[i++] = *p++;
-    s[i++] = ' ';
-    for (p = PGN[page]; *p; ) s[i++] = *p++;
-    if (stepmode) { s[i++] = ' '; s[i++] = 'S'; s[i++] = 'T'; s[i++] = 'E'; s[i++] = 'P'; }
-    s[i++] = ' '; s[i++] = 'C'; s[i++] = 'P'; s[i++] = 'U';
-    itoa3((int32_t)cpu_pct, n);
-    for (j = 0; n[j]; j++) s[i++] = n[j];
-    s[i++] = '%';
-    if (msg) { s[i++] = ' '; while (*msg && i < 38u) s[i++] = *msg++; }
-    s[i] = 0;
-    draw_text_box(0, 224, 240, &FONT_S, s, C_PU, 1);
+    const char *p;
+    l[0] = (char)('1' + sel); l[1] = ' '; scopy(l + 2, TNAME[sel]);     /* the selected drum, bright, on the left */
+    if (msg) scopy(r, msg);
+    else {
+        for (p = PGN[page]; *p; ) r[i++] = *p++;
+        if (stepmode) { r[i++] = ' '; r[i++] = 'S'; r[i++] = 'T'; r[i++] = 'E'; r[i++] = 'P'; }
+        r[i++] = ' '; r[i++] = 'C'; r[i++] = 'P'; r[i++] = 'U';
+        itoa3((int32_t)cpu_pct, n);
+        for (j = 0; n[j]; j++) r[i++] = n[j];
+        r[i++] = '%'; r[i] = 0;
+    }
+    cv_begin(240, 16, BG);
+    cv_text(4, 0, &FONT_S, l, C_YE);
+    cv_text(236 - text_w(&FONT_S, r), 0, &FONT_S, r, msg ? C_CY : C_PU);
+    cv_blit(0, 224);
 }
 
 static void app_main(void)
 {
     uint32_t prev = 0, k, t, page = 0, sel = 0, stepmode = 0, redraw = 1, hot = 99, hot_drawn = 98, pend_save = 0;
     uint32_t grid_sig = ~0u, head_drawn = ~0u, t_stat = 0, t_msg = 0, t_home = 0, home_long = 0, sig_drawn = ~0u, led_drawn = ~0u;
-    uint32_t seen[NT], flash_until[NT];
+    uint32_t seen[NT], flash_until[NT], banner_t = 0;
     uint8_t shown[4];
     const char *msg = 0;
 
@@ -591,7 +606,7 @@ static void app_main(void)
     lcd_fill(0, 0, 240, 240, BG);
 
     for (;;) {
-        uint32_t keys, down, up, rel, b, ledmask = 0, r, sig, patn = cur_pat, pl = playing, rc = rec_arm, sh = (fm1_in.buttons >> BTN_SEL) & 1u;
+        uint32_t keys, down, up, rel, b, ledmask = 0, r, sig, ban, patn = cur_pat, pl = playing, rc = rec_arm, sh = (fm1_in.buttons >> BTN_SEL) & 1u;
         int32_t d;
         platform_poll();
 
@@ -607,7 +622,7 @@ static void app_main(void)
                     if (mod_m) { mute_mask ^= (uint8_t)(1u << t); }                       /* hold MUTE + a pad */
                     else if (mod_s) { solo_mask ^= (uint8_t)(1u << t); }                  /* hold SOLO + a pad */
                     else if (mod_c) { for (r = 0; r < NSTEP; r++) pat[cur_pat][t][r] = 0; msg = "CLEARED"; t_msg = fm1_ms; }
-                    else if (sh) { sel = t; redraw = 1; }                                 /* hold SEL + a pad */
+                    else if (sh) { sel = t; redraw = 1; banner_t = fm1_ms; }                                 /* hold SEL + a pad */
                     else if (stepmode) { uint8_t v = pat[cur_pat][sel][k]; pat[cur_pat][sel][k] = (uint8_t)(v == 0u ? 1u : v == 1u ? 3u : 0u); }
                     else push_ev(EV_PAD, t, 100);
                 } else if (k < 24u) {
@@ -647,7 +662,7 @@ static void app_main(void)
             }
         }
         d = fm1_enc_take(ENC_SELECT);
-        if (d) { sel = (sel + NT + (d > 0 ? 1u : NT - 1u)) % NT; redraw = 1; }
+        if (d) { sel = (sel + NT + (d > 0 ? 1u : NT - 1u)) % NT; redraw = 1; banner_t = fm1_ms; }
         d = fm1_enc_take(ENC_ALGORITHM);
         if (d) { int32_t v = (int32_t)G[G_BPM] + d * (d > 2 || d < -2 ? 6 : 2); G[G_BPM] = (uint8_t)(v < 0 ? 0 : v > 127 ? 127 : v); }
         d = fm1_enc_take(ENC_PRESETS);
@@ -674,9 +689,10 @@ static void app_main(void)
         fm1_led_key(BTN_ARP, rpt);
 
         /* the screen: only what changed */
-        sig = patn | (pl ? 8u : 0u) | (rc ? 16u : 0u) | (uint32_t)G[G_BPM] << 8;
+        ban = banner_t && fm1_ms - banner_t < 1400u ? sel + 1u : 0u;
+        sig = patn | (pl ? 8u : 0u) | (rc ? 16u : 0u) | (uint32_t)G[G_BPM] << 8 | ban << 20;
         if (redraw) { for (k = 0; k < 4u; k++) shown[k] = 255; sig_drawn = ~0u; grid_sig = ~0u; head_drawn = ~0u; t_stat = fm1_ms - 1000u; redraw = 0; }
-        if (sig != sig_drawn) { sig_drawn = sig; draw_title(patn, pl, rc); }
+        if (sig != sig_drawn) { sig_drawn = sig; draw_title(patn, pl, rc, ban); }
         {
             uint32_t h = sel * 7u + mute_mask * 131u + solo_mask * 977u + cur_pat * 31u, s, tt;
             for (tt = 0; tt < NT; tt++) for (s = 0; s < NSTEP; s++) h = h * 33u + pat[cur_pat][tt][s];

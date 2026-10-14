@@ -1,0 +1,9 @@
+100 enc 0 1
+200 enc 0 1
+300 shot
+2200 shot
+2300 enc 0 1
+2400 enc 0 1
+2500 enc 0 1
+2600 shot
+3000 end
