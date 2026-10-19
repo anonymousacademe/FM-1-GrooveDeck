@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* GROVEDECK: a drum machine and groovebox for the M-VAVE FM-1. Eight synthesized drums, a 16-step sequencer, eight patterns.
+/* GROOVEDECK: a drum machine and groovebox for the M-VAVE FM-1. Eight synthesized drums, a 16-step sequencer, eight patterns.
  * Built on Dinghy (zvenson); the platform is Felucca (Leo Kuroshita, Hugelton Instruments) and SLOOP (isod89).
  *
  *   drums     KICK SNARE CLAP C.HAT O.HAT TOM RIM COWBELL, each four knobs; the closed hat chokes the open one
@@ -7,10 +7,12 @@
  *   buttons   PLAY REC  SEQ (step mode)  EDIT sound  ENV mix  FX  GLO global  ARP (hold: note repeat)  SEL (hold + pad: select)
  *             OCT- OCT+ pattern  SAVE  HOME (hold: panic and stop)
  *   encoders  KNOB1-4 the page, SELECT the drum, ALGORITHM tempo, PRESETS the kit, MASTER volume
+ *   MIDI      in (the TRS jack and USB, any channel): notes 36-51 = pads 1-16 (+ General MIDI drum notes), velocity = level,
+ *             program change 0-7 = pattern, 8-11 = kit, CC 120 / 123 = silence the drums. Out (USB, channel 10): every hit, same notes
  *
  * Integers only (no float, no 64-bit division). Everything that makes sound or keeps time runs in the audio ISR; the
  * main loop posts events. tests/host.c runs this file on a computer. */
-#define APP_NAME "GROVEDECK"
+#define APP_NAME "GROOVEDECK"
 #include "platform.c"
 #include "tables.h"
 
@@ -482,13 +484,26 @@ static void app_audio(int32_t *out, uint32_t n)
 }
 
 /* ---- the engine: events from the pads and MIDI, the clock, the sequencer, note repeat (all in the ISR) */
-enum { EV_PAD, EV_PADUP, EV_PANIC };
+enum { EV_PAD, EV_PADUP, EV_PANIC, EV_MPAD };     /* EV_MPAD: a pad hit that came from MIDI (not echoed back out) */
 #define EVQ 64u
 static volatile uint16_t evq[EVQ];
 static volatile uint32_t evq_w, evq_r;
 static volatile uint8_t want_play, rec_arm, rpt, want_pat;   /* main -> ISR */
 static volatile uint32_t playing, seq_step, cur_pat;         /* ISR -> main */
-static uint32_t acc, cur_len, rpt_acc, held_mask;
+static uint32_t acc, cur_len, rpt_acc, held_mask, ext_mask;   /* ext_mask: the held pads that came from MIDI */
+static uint8_t rpt_vel[NT];                                   /* note repeat rolls at the velocity of the hit */
+
+/* MIDI out over USB: every drum that sounds from the pads or the sequencer. The audio ISR is the only writer of this ring and the
+ * main loop the only reader and the only caller of midi_send. An entry is the drum | velocity << 8. */
+#define MOQ 64u
+static volatile uint32_t moq[MOQ], moq_w, moq_r;
+static void mout_push(uint32_t t, uint32_t vel)
+{
+    uint32_t w = moq_w;
+    if (w - moq_r >= MOQ) return;
+    moq[w & (MOQ - 1u)] = t | (vel & 127u) << 8;
+    moq_w = w + 1u;
+}
 
 static void push_ev(uint32_t type, uint32_t trk, uint32_t vel)
 {
@@ -499,13 +514,17 @@ static void push_ev(uint32_t type, uint32_t trk, uint32_t vel)
 }
 static int audible(uint32_t t) { return solo_mask ? (solo_mask >> t & 1u) : !(mute_mask >> t & 1u); }
 
-static void pad_hit(uint32_t t, uint32_t vel)
+static void pad_hit(uint32_t t, uint32_t vel, uint32_t echo)   /* echo 0: the hit came from MIDI in, do not send it out again */
 {
     trigger(t, vel);
+    if (echo) mout_push(t, vel);
     if (rec_arm && playing) {                   /* record to the nearest step */
         uint32_t s = seq_step;
         if (acc * 2u >= cur_len) s = s + 1u >= NSTEP ? 0u : s + 1u;
         pat[cur_pat][t][s] = (uint8_t)(1u | (vel >= 110u ? 2u : 0u));
+#ifdef DINGHY_HOST
+        printf("%6u ms  rec drum %u step %u\n", fm1_ms, t, s);
+#endif
     }
 }
 
@@ -519,9 +538,19 @@ static void engine_tick(void)                   /* every 16 frames */
     while (evq_r != evq_w) {
         uint32_t e = evq[evq_r & (EVQ - 1u)], type = e >> 14, vel = e >> 7 & 127u, trk = e & 127u;
         evq_r++;
-        if (type == EV_PAD && trk < NT) { pad_hit(trk, vel); held_mask |= 1u << trk; rpt_acc = 0; }
+        if ((type == EV_PAD || type == EV_MPAD) && trk < NT) {
+            pad_hit(trk, vel, type == EV_PAD);
+            held_mask |= 1u << trk; rpt_vel[trk] = (uint8_t)vel; rpt_acc = 0;
+            if (type == EV_MPAD) ext_mask |= 1u << trk; else ext_mask &= ~(1u << trk);
+        }
         else if (type == EV_PADUP && trk < NT) held_mask &= ~(1u << trk);
-        else if (type == EV_PANIC) { for (t = 0; t < NT; t++) dv[t].on = 0; held_mask = 0; }
+        else if (type == EV_PANIC) {
+            for (t = 0; t < NT; t++) dv[t].on = 0;
+            held_mask = 0;
+#ifdef DINGHY_HOST
+            printf("%6u ms  silence\n", fm1_ms);
+#endif
+        }
     }
 
     wp = want_play;
@@ -540,7 +569,7 @@ static void engine_tick(void)                   /* every 16 frames */
         if (rpt_acc >= rl) {
             rpt_acc -= rl;
             if (rpt_acc >= rl) rpt_acc = 0;
-            for (t = 0; t < NT; t++) if (held_mask >> t & 1u) pad_hit(t, 100);
+            for (t = 0; t < NT; t++) if (held_mask >> t & 1u) pad_hit(t, rpt_vel[t], !(ext_mask >> t & 1u));
         }
     } else
         rpt_acc = 0;
@@ -557,7 +586,10 @@ static void engine_tick(void)                   /* every 16 frames */
             cur_len = step_len + ((s & 1u) ? 0u - swd : swd);
             for (t = 0; t < NT; t++) {
                 uint32_t v = pat[cur_pat][t][s];
-                if ((v & 1u) && audible(t)) trigger(t, v & 2u ? 127u : nv);
+                if ((v & 1u) && audible(t)) {
+                    trigger(t, v & 2u ? 127u : nv);
+                    mout_push(t, v & 2u ? 127u : nv);
+                }
             }
         }
     }
@@ -675,9 +707,9 @@ static void draw_title(uint32_t patn, uint32_t pl, uint32_t rc, uint32_t ban)   
         cv_text(6, 0, &FONT_L, big, C_CY);
         cv_text(8, 0, &FONT_L, big, C_YE);
     } else {
-        cv_text(10, 0, &FONT_L, "GROVEDECK", C_MG);                       /* chromatic aberration: magenta, cyan, then white on top */
-        cv_text(6, 0, &FONT_L, "GROVEDECK", C_CY);
-        cv_text(8, 0, &FONT_L, "GROVEDECK", C_WHITE);
+        cv_text(10, 0, &FONT_L, "GROOVEDECK", C_MG);                       /* chromatic aberration: magenta, cyan, then white on top */
+        cv_text(6, 0, &FONT_L, "GROOVEDECK", C_CY);
+        cv_text(8, 0, &FONT_L, "GROOVEDECK", C_WHITE);
     }
     itoa3(60 + G[G_BPM], n);
     scopy(s, "PAT ");
@@ -756,11 +788,31 @@ static void draw_status(uint32_t page, uint32_t sel, uint32_t stepmode, const ch
     cv_blit(0, 224);
 }
 
+/* MIDI in: a note -> a pad (drum 0..15), or -1. Notes 36..51 are the pads 1..16 in the panel's order (the usual drum-pad layout).
+ * Outside that range the General MIDI drum notes that clearly match one of the sixteen drums play it; inside it the pads win. */
+static int note_pad(uint32_t n)
+{
+    if (n >= 36u && n <= 51u) return (int)(n - 36u);
+    switch (n) {
+    case 35: return T_KICK;                                     /* acoustic bass drum */
+    case 52: case 55: case 57: return T_CRASH;                  /* chinese, splash, crash 2 */
+    case 53: case 59: return T_RIDE;                            /* ride bell, ride 2 */
+    case 54: case 69: case 70: case 82: return T_SHAKE;         /* tambourine, cabasa, maracas, shaker */
+    case 56: case 67: case 68: return T_COW;                    /* cowbell, agogo */
+    case 58: return T_ZAP;                                      /* vibraslap */
+    case 60: case 62: case 63: return T_CONGH;                  /* hi bongo, mute and open hi conga */
+    case 61: case 64: return T_CONGL;                           /* low bongo, low conga */
+    case 75: case 76: case 77: return T_CLAVE;                  /* claves, wood blocks */
+    default: return -1;
+    }
+}
+static char mbuf[12];
+
 static void app_main(void)
 {
     uint32_t prev = 0, k, t, page = 0, sel = 0, stepmode = 0, redraw = 1, hot = 99, hot_drawn = 98, pend_save = 0;
     uint32_t grid_sig = ~0u, head_drawn = ~0u, t_stat = 0, t_msg = 0, t_home = 0, home_long = 0, sig_drawn = ~0u, led_drawn = ~0u;
-    uint32_t seen[NT], flash_until[NT], banner_t = 0;
+    uint32_t seen[NT], flash_until[NT], banner_t = 0, off_mask = 0, off_due[NT];
     uint8_t shown[4];
     const char *msg = 0;
 
@@ -840,6 +892,41 @@ static void app_main(void)
         if (d) { int32_t v = (int32_t)G[G_BPM] + d * (d > 2 || d < -2 ? 6 : 2); G[G_BPM] = (uint8_t)(v < 0 ? 0 : v > 127 ? 127 : v); }
         d = fm1_enc_take(ENC_PRESETS);
         if (d) { load_kit((kit_n + 4u + (d > 0 ? 1u : 3u)) % 4u); msg = KITNAME[kit_n]; t_msg = fm1_ms; redraw = 1; }
+
+        {   /* MIDI in: the TRS jack and USB come out of the same queue, any channel. The clock bytes (F8 FA FB FC) are dropped. */
+            uint8_t st, d1, d2;
+            while (midi_get(&st, &d1, &d2)) {
+                uint32_t cm = st & 0xF0u;
+                int p = (cm == 0x80u || cm == 0x90u) ? note_pad(d1) : -1;
+                if (cm == 0x90u && d2) { if (p >= 0) push_ev(EV_MPAD, (uint32_t)p, d2); }
+                else if (cm == 0x80u || cm == 0x90u) { if (p >= 0) push_ev(EV_PADUP, (uint32_t)p, 0); }   /* a note off only ends a note repeat */
+                else if (cm == 0xB0u) { if (d1 == 120u || d1 == 123u) push_ev(EV_PANIC, 0, 0); }         /* the sequencer keeps running */
+                else if (cm == 0xC0u) {                                                                   /* program: 0-7 pattern, 8-11 kit */
+                    if (d1 < NPAT) {
+                        want_pat = d1;
+                        scopy(mbuf, "PATTERN "); mbuf[8] = (char)('1' + d1); mbuf[9] = 0; msg = mbuf; t_msg = fm1_ms;
+#ifdef DINGHY_HOST
+                        printf("%6u ms  program pattern %u\n", fm1_ms, d1);
+#endif
+                    } else if (d1 < NPAT + 4u) {
+                        load_kit(d1 - NPAT); msg = KITNAME[kit_n]; t_msg = fm1_ms; redraw = 1;
+#ifdef DINGHY_HOST
+                        printf("%6u ms  program kit %u\n", fm1_ms, d1 - NPAT);
+#endif
+                    }
+                }
+            }
+            while (moq_r != moq_w) {            /* what the pads and the sequencer played, out over USB on channel 10 */
+                uint32_t m = moq[moq_r & (MOQ - 1u)], dr = m & 0xFFu, v = m >> 8 & 127u;
+                moq_r++;
+                if (dr >= NT) continue;
+                if (off_mask >> dr & 1u) midi_send(0x89u, 36u + dr, 0);       /* a hit again before its note off: end the old one first */
+                midi_send(0x99u, 36u + dr, v ? v : 1u);
+                off_mask |= 1u << dr; off_due[dr] = fm1_ms + 30u;             /* drums are short: the note off follows after 30 ms */
+            }
+            for (t = 0; t < NT; t++)
+                if ((off_mask >> t & 1u) && (int32_t)(fm1_ms - off_due[t]) >= 0) { midi_send(0x89u, 36u + t, 0); off_mask &= ~(1u << t); }
+        }
 
         for (t = 0; t < NT; t++)
             if (trig_cnt[t] != seen[t]) { seen[t] = trig_cnt[t]; flash_until[t] = fm1_ms + 70u; }

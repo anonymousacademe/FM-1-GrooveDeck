@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""Precompute GroveDeck's lookup tables (the chip has no FPU): firmware/src/tables.h.
+"""Precompute GrooveDeck's lookup tables (the chip has no FPU): firmware/src/tables.h.
    python3 tools/gen_tables.py"""
 import math
 from pathlib import Path

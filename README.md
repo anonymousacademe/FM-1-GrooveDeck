@@ -2,6 +2,16 @@
 
 # Dinghy
 
+> **This repository is GROOVEDECK**, a drum machine / groovebox built on Dinghy (identity `FM-1_950`): 16 synthesized drums, a 16-step
+> sequencer, 8 patterns, 4 kits. See [docs/MANUAL.md](docs/MANUAL.md) and [docs/STATUS.md](docs/STATUS.md). The text below is Dinghy's.
+>
+> **MIDI.** Play the drums from a keyboard or pad controller on the **3.5 mm TRS jack** (MIDI in; use a DIN-to-TRS cable or adapter of
+> **type A**; the jack is input only) or over **USB-MIDI**, on any channel: notes 36-51 are pads 1-16 (KICK SNARE CLAP C.HAT O.HAT TOM RIM
+> COWBL CNG H CNG L CLAVE SHAKE CRASH RIDE G.SNR ZAP), velocity is the hit level, General MIDI drum notes outside that range play the drum they
+> match, program change 0-7 picks the pattern and 8-11 the kit, CC 120/123 silences the drums. GROOVEDECK sends its pad hits and sequencer
+> steps over **USB-MIDI on channel 10** with the same notes, a note off 30 ms later. MIDI clock is ignored for now. The TRS input has not
+> been tried by us on a GROOVEDECK unit yet. Details: [docs/MANUAL.md](docs/MANUAL.md#2-midi).
+
 **The smallest firmware for the M-VAVE FM-1 to build your own on.**
 
 Dinghy plays a sine wave on the keys, and that is all it does. Under it is everything an FM-1 firmware needs

@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* A fake FM-1 on a computer: the app (firmware/src/grovedeck.c) runs unchanged on it. platform.c includes
+/* A fake FM-1 on a computer: the app (firmware/src/groovedeck.c) runs unchanged on it. platform.c includes
  * this file instead of the hardware when DINGHY_HOST is set. A script presses keys over time; out come
  * the screen (PPM, at the times SHOT asks) and the sound (WAV, as the FM-1 sends it over USB).
  *
  *   mkdir -p build/host
- *   cc -O2 -Wall -DDINGHY_HOST -Ifirmware/src -Ifirmware/gen -o build/host/grovedeck firmware/src/grovedeck.c
- *   build/host/grovedeck build/host/grovedeck        (-> build/host/grovedeck.wav, build/host/grovedeck-<ms>.ppm)
- *   build/host/grovedeck OUT script.txt [FPS]    (your own script; with FPS: OUT-NNNNN.ppm, a frame every 1/FPS s:
+ *   cc -O2 -Wall -DDINGHY_HOST -Ifirmware/src -Ifirmware/gen -o build/host/groovedeck firmware/src/groovedeck.c
+ *   build/host/groovedeck build/host/groovedeck        (-> build/host/groovedeck.wav, build/host/groovedeck-<ms>.ppm)
+ *   build/host/groovedeck OUT script.txt [FPS]    (your own script; with FPS: OUT-NNNNN.ppm, a frame every 1/FPS s:
  *                                             a film of your firmware, e.g. ffmpeg -r 30 -i OUT-%05d.ppm ...)
  *
  * Change SCRIPT below to try your own app. */
@@ -16,7 +16,7 @@
 #include <string.h>
 
 #ifndef APP_NAME
-#define APP_NAME "GROVEDECK"
+#define APP_NAME "GROOVEDECK"
 #endif
 #ifndef APP_VER
 #define APP_VER "0.0"
@@ -89,11 +89,21 @@ static int midi_get(uint8_t *st, uint8_t *d1, uint8_t *d2)
 }
 static void midi_send(uint32_t st, uint32_t d1, uint32_t d2) { printf("%6u ms  MIDI out %02X %u %u\n", fm1_ms, st, d1, d2); }
 
+/* the TRS jack: the parser of firmware/src/midi_uart.c, fed with bytes by "T uart B0 B1 ..." (it queues into the same ring) */
+static int um_put(uint32_t pkt)
+{
+    if (mq_w - mq_r >= 64u) return 0;
+    mq[mq_w % 64u][0] = (uint8_t)(pkt >> 8); mq[mq_w % 64u][1] = (uint8_t)(pkt >> 16); mq[mq_w % 64u][2] = (uint8_t)(pkt >> 24);
+    mq_w++;
+    return 1;
+}
+#include "../firmware/src/midi_uart.c"
+
 static void app_audio(int32_t *out, uint32_t n);
 static void app_main(void);
 
 /* the script: at t ms, keys down (bit k = key k, 0 = F3), a button edge, a MIDI message. A script file (the second
- * argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID [MS]", "T enc ID N", "T shot", "T midi ST D1 D2", "T end" */
+ * argument) replaces it, a line each: "T keys MASK" (hex or decimal), "T btn ID [MS]", "T enc ID N", "T shot", "T midi ST D1 D2", "T uart B0 B1 ...", "T end" */
 typedef struct { uint32_t t, keys; int btn; uint8_t st, d1, d2; } host_ev_t;
 static const host_ev_t SCRIPT0[] = {
     {200, 1u << 7, -1, 0, 0, 0},                                /* C4 */
@@ -126,6 +136,17 @@ static void read_script(const char *path)
         if (!strcmp(what, "keys")) { sscanf(line, "%*u %*s %i", (int *)&e.keys); }
         else if (!strcmp(what, "enc")) { int id = 0, dn = 0; sscanf(line, "%*u %*s %d %d", &id, &dn); e.btn = 100 + id; e.keys = (uint32_t)dn; }
         else if (!strcmp(what, "btn")) { int dur = 0; sscanf(line, "%*u %*s %d %d", &e.btn, &dur); e.keys = (uint32_t)dur; }
+        else if (!strcmp(what, "uart")) {         /* raw bytes (hex) on the TRS jack: one event per byte */
+            char *q = strstr(line, "uart") + 4;
+            for (;;) {
+                char *end;
+                long v = strtol(q, &end, 16);
+                if (end == q) break;
+                q = end;
+                if (n < 4096u) { host_ev_t u = e; u.btn = 300; u.keys = (uint32_t)(v & 0xFF); ev[n++] = u; }
+            }
+            continue;
+        }
         else if (!strcmp(what, "midi")) { sscanf(line, "%*u %*s %i %u %u", (int *)&a, &b, &c); e.st = (uint8_t)a; e.d1 = (uint8_t)b; e.d2 = (uint8_t)c; }
         else continue;
         ev[n++] = e;
@@ -135,7 +156,7 @@ static void read_script(const char *path)
     script_n = n;
 }
 
-static const char *host_out = "build/host/grovedeck";
+static const char *host_out = "build/host/groovedeck";
 static int16_t *wav;
 static uint32_t wav_n;
 
@@ -187,7 +208,9 @@ static void platform_poll(void)                 /* one call = one millisecond */
         if (script[step].st) {
             mq[mq_w % 64u][0] = script[step].st; mq[mq_w % 64u][1] = script[step].d1; mq[mq_w % 64u][2] = script[step].d2;
             mq_w++;
-        } else if (script[step].btn >= 100)
+        } else if (script[step].btn >= 300)
+            um_byte(script[step].keys);
+        else if (script[step].btn >= 100)
             host_enc[(script[step].btn - 100) & 7] += (int32_t)script[step].keys;
         else if (script[step].btn >= 0)
         {                                       /* a press now (fm1_in.buttons), its release after keys ms (default 80) */

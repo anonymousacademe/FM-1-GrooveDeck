@@ -6,6 +6,7 @@
  *   USB rescue          OCT- held at power-on: no audio, only the updater (the web installer still works)
  *   updater             the M-UPGRADE SysEx path: the web installer / the hub can always reach the FM-1
  *   USB-MIDI            in and out (midi_get, midi_send)
+ *   TRS MIDI in         the 3.5 mm jack, UART1 (src/midi_uart.c): the same queue as USB, so midi_get returns both
  *   USB audio           the output as a class-compliant 16-bit stereo input, 44.1 or 48 kHz
  *   keys, knobs, LEDs   fm1_in.notes / buttons, fm1_input_edges, fm1_enc_take, fm1_led_key (hal/fm1_input.h)
  *   screen              240 x 240, lcd_fill, draw_text_box with FONT_S (16 px) / FONT_L (32 px) (gfx.c)
@@ -63,12 +64,24 @@ static volatile uint32_t fm1_ms;                /* milliseconds since power-on (
 #define FELUCCA_OTA 1
 #define FELUCCA_CDC 0
 #define FELUCCA_UAC 1
-#define FELUCCA_UART 0
+#define FELUCCA_UART 1                          /* the TRS MIDI input (the jack is input only: there is no MIDI out jack) */
 #include "usb.c"
+#if FELUCCA_UART
+static int um_put(uint32_t pkt)                    /* into the USB MIDI-in queue (usb.c): 0 = full */
+{
+    if (mi_w - mi_r >= MQ)
+        return 0;
+    midi_in_q[mi_w % MQ] = pkt;
+    RING_PUBLISH();
+    mi_w++;
+    return 1;
+}
+#include "midi_uart.c"
+#endif
 
 /* ---- flash: read anywhere; erase / program only the update's staging area and the settings sector */
 #define SETTINGS_AT 0x000FC000u                 /* one 4 KiB sector of Felucca's globals area */
-#define PROJECT_AT 0x000FB000u                  /* GroveDeck: one more 4 KiB sector (in the free area below the settings) for the project */
+#define PROJECT_AT 0x000FB000u                  /* GrooveDeck: one more 4 KiB sector (in the free area below the settings) for the project */
 #define FL_RANGE_OK(off, n) (FL_IN(off, n, FL_OTA_LO, FL_OTA_HI) || FL_IN(off, n, SETTINGS_AT, SETTINGS_AT + 0x1000u) || \
                              FL_IN(off, n, PROJECT_AT, PROJECT_AT + 0x1000u))
 #include "fm1_flash.h"
@@ -136,7 +149,7 @@ static void ota_commit(const uint8_t *parm)
 
 /* ---- settings: [magic][length][crc32] then the bytes; settings_save erases the sector (~50 ms with
  * the interrupts off: the sound drops out), so save when nothing plays, not on every knob step */
-#define SETTINGS_MAGIC 0x59474E47u              /* "GNGY" (GroveDeck: not Dinghy's) */
+#define SETTINGS_MAGIC 0x59474E47u              /* "GNGY" (GrooveDeck: not Dinghy's) */
 static uint32_t crc32(const uint8_t *p, uint32_t n)
 {
     uint32_t c = 0xFFFFFFFFu, k;
@@ -172,7 +185,7 @@ static int settings_save(const void *p, uint32_t n)   /* p in RAM, n <= 256 */
     return fl_write(SETTINGS_AT, (const uint8_t *)h, sizeof h);   /* the header last: a cut save stays invalid */
 }
 
-/* ---- the project (GroveDeck): up to 4000 bytes in one sector, [magic][length][crc32] first, as the settings.
+/* ---- the project (GrooveDeck): up to 4000 bytes in one sector, [magic][length][crc32] first, as the settings.
  * Same rules: save when nothing plays (the erase stalls the sound). The header goes last: a cut save stays invalid. */
 static int project_load(void *p, uint32_t n)    /* 0: loaded; else p may be half filled: start from defaults */
 {
@@ -241,8 +254,12 @@ void fm1_timer5_irq(void)
             uac_service();
         return;
     }
-    if (owed)
+    if (owed) {
         usb_poll();
+#if FELUCCA_UART
+        uart_midi_poll();                       /* the TRS jack: same context, same queue */
+#endif
+    }
     owed = 0;
 }
 extern void isr_timer5(void);
@@ -363,6 +380,9 @@ void fm1_cstart(void)
     fm1_adc_init();
     fm1_audio_init(abuf, HALF_WORDS, isr_alnk0, 3);   /* (abuf is zero: .bss) */
     usb_start();
+#if FELUCCA_UART
+    uart_midi_init();                           /* before TIMER5: it read-modify-writes port H too */
+#endif
     fm1_timer5_start(isr_timer5, 4);
     fm1_guard_lock_top();
     fm1_irq_enable_all();
